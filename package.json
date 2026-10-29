@@ -1,9 +1,9 @@
 {
   "name": "@local/safe-delete-guard",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "Denies destructive delete commands before they run (rd /s, Remove-Item -Recurse, rm -rf, cmd /c wrappers) and points at a reversible delete tool.",
+  "description": "Denies destructive delete commands before they run, and ships a trash overlay that groups recycled files by session / turn with per-entry retention, a draggable settings window, location migration and low-disk protection.",
   "keywords": [
     "dsh",
     "deepseek-harness",
@@ -20,11 +20,13 @@
   "homepage": "https://github.com/ParadoxFoehn/safe-delete-guard#readme",
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -36,6 +38,16 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
     }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

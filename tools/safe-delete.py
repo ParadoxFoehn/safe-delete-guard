@@ -38,6 +38,7 @@ import ctypes
 import datetime
 import json
 import os
+import re
 import sys
 import time
 
@@ -53,12 +54,27 @@ TEMP = os.path.abspath(os.environ.get("TEMP") or r"C:\Windows\Temp")
 TRASH_DIRNAME = ".dsh-trash"
 WORKSPACE_TRASH = os.path.join(WORKSPACE, "_回收站")
 EXTRA_ROOTS = [p.strip() for p in (os.environ.get("SAFE_DELETE_ALLOW") or "").split(";") if p.strip()]
-# 隔离区目录：默认每个盘根下 <X>:\.dsh-trash，可用环境变量 SAFE_DELETE_TRASH 或 --trash-dir 指定
-TRASH_OVERRIDE = (os.environ.get("SAFE_DELETE_TRASH") or "").strip() or None
+CONFIG_PATH = os.path.join(os.environ.get("LOCALAPPDATA") or TEMP, "dsh-safe-delete", "config.json")
+
+
+def _load_config():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+_CFG = _load_config()
+
+# 隔离区目录：命令行 > 环境变量 > 配置文件 > 盘根默认
+TRASH_OVERRIDE = ((os.environ.get("SAFE_DELETE_TRASH") or "").strip()
+                  or (str(_CFG.get("trash") or "").strip()) or None)
 # 自动清理：隔离区里的东西放满这么多天就永久删除；0 = 不自动清
 try:
-    RETENTION_DAYS = float(os.environ.get("SAFE_DELETE_RETENTION_DAYS") or 7)
-except ValueError:
+    RETENTION_DAYS = float(os.environ.get("SAFE_DELETE_RETENTION_DAYS")
+                           or _CFG.get("retentionDays") or 7)
+except (TypeError, ValueError):
     RETENTION_DAYS = 7.0
 DSH_HOME = os.environ.get("DSH_HOME") or os.path.join(
     os.environ.get("USERPROFILE", r"C:\Users\Default"), ".dsh")
@@ -179,6 +195,46 @@ def _allow_roots(extra=None):
     return [os.path.abspath(r) for r in roots if r]
 
 
+def _free_bytes(path):
+    try:
+        return shutil.disk_usage(_drive_root(path) or path).free
+    except OSError:
+        return None
+
+
+def _make_room(target, need):
+    """目标卷快满时，按放入时间从最旧的开始永久删除，直到腾出 need + 512MB。
+
+    这是"磁盘满 → 再删除 → 先清最早"的实现；只在本次回收需要空间时触发。
+    """
+    free = _free_bytes(target)
+    if free is None:
+        return 0
+    margin = 512 * 1024 * 1024
+    if free >= need + margin:
+        return 0
+    vol = _drive_root(target)
+    recs = [r for r in _read_index() if _under(r.get("entry_dir") or "", vol)]
+    recs.sort(key=lambda r: str(r.get("created") or ""))
+    removed = 0
+    for r in recs:
+        if free >= need + margin:
+            break
+        entry = r.get("entry_dir")
+        if not entry or not os.path.isdir(entry):
+            continue
+        size = sum(int(i.get("bytes") or 0) for i in (r.get("items") or []))
+        try:
+            _rimraf(entry, [r.get("root")])
+            removed += 1
+            free += size
+        except Exception:
+            pass
+    if removed:
+        sys.stderr.write("[空间] 目标盘不足，已永久删除 %d 条最早的回收记录\n" % removed)
+    return removed
+
+
 def _trash_candidates(path, override=None):
     """隔离区候选，按优先级：
 
@@ -194,6 +250,8 @@ def _trash_candidates(path, override=None):
         if not cand:
             continue
         c = os.path.abspath(cand)
+        if os.path.splitdrive(c)[0].lower() == "c:":
+            continue                      # 禁止往系统盘写
         if os.path.splitdrive(c)[0].lower() == vol:
             out.append(c)
     out.append(os.path.join(_drive_root(path), TRASH_DIRNAME))
@@ -242,6 +300,8 @@ def _auto_purge(days, verbose=True):
         except Exception as e:
             if verbose:
                 sys.stderr.write("[warn] 自动清理失败 %s：%s\n" % (rec["id"], e))
+    for rec in _read_index():
+        _prune_empty(rec.get("root"))
     if removed and verbose:
         sys.stderr.write("[清理] 隔离区超过 %.0f 天，已永久删除 %d 项\n" % (days, len(removed)))
     return removed
@@ -340,6 +400,45 @@ def _unhide(path):
         pass
 
 
+
+def _safe_folder(s, fallback="未命名会话"):
+    s = re.sub(r'[\\/:*?"<>|]+', "_", (s or "")).strip(" .")
+    return s[:40] or fallback
+
+
+def _session_label():
+    """从 DSH 的投影缓存里取「会话名 + 当前轮次」，取不到就给中性标签。
+
+    投影缓存是内部实现：升级后可能变，所以任何异常都退化成 未命名会话/手动。
+    """
+    sid = os.environ.get("DSH_SESSION_ID", "").strip()
+    name, turn = "", None
+    if sid:
+        p = os.path.join(DSH_HOME, "storages", "session_projcache", "sessions", sid + ".json")
+        try:
+            with open(p, encoding="utf-8") as f:
+                rows = (json.load(f).get("record") or {}).get("rows") or {}
+            name = ((rows.get("title") or {}).get("val") or "").strip()
+            turn = ((rows.get("sessionStats") or {}).get("val") or {}).get("lastTurn")
+            # 投影缓存是异步刷的：新一轮刚开始时 lastTurn 还停在上一轮。
+            # 用 turnBoundary.openTurnStartSeq 和已有 turnOutline 的 seq 比对，
+            # 只有在"开着的这一轮比已知最后一轮还新"时才 +1。
+            tb = (rows.get("turnBoundary") or {}).get("val") or {}
+            open_seq = tb.get("openTurnStartSeq")
+            outline = ((rows.get("turnOutline") or {}).get("val") or {}).get("turns") or []
+            seqs = [x.get("seq") for x in outline if isinstance(x.get("seq"), int)]
+            if (isinstance(open_seq, int) and seqs and isinstance(turn, int)
+                    and open_seq > max(seqs)):
+                turn = turn + 1
+        except Exception:
+            pass
+    return _safe_folder(name), (int(turn) if isinstance(turn, int) and turn > 0 else None)
+
+
+def _turn_label(turn):
+    return ("第%d轮" % turn) if turn else "手动"
+
+
 def _now_id():
     return time.strftime("%Y%m%d-%H%M%S") + "-" + ("%04x" % (os.getpid() & 0xFFFF))
 
@@ -356,10 +455,20 @@ def _do_trash(items, args):
             raise Refuse("cross_drive", "一次只能处理同一个盘上的目标：%s 与 %s 不同盘。"
                          % (first, it["orig"]),
                          "分两次跑；跨盘改名不是原子的，这里不做。")
+    sess = (getattr(args, "session", None) or "").strip()
+    turn = getattr(args, "turn", None)
+    if not sess:
+        sess, auto_turn = _session_label()
+        if turn is None:
+            turn = auto_turn
+    else:
+        sess = _safe_folder(sess)
+    tdir = _turn_label(turn)
+    _make_room(first, sum(int(i.get("bytes") or 0) for i in items))
     root = None
     for cand in _trash_candidates(first, getattr(args, "trash_dir", None)):
         try:
-            os.makedirs(os.path.join(cand, entry_id), exist_ok=False)
+            os.makedirs(os.path.join(cand, sess, tdir, entry_id), exist_ok=False)
             root = cand
             break
         except FileExistsError:
@@ -370,7 +479,7 @@ def _do_trash(items, args):
         raise Refuse("trash_unwritable",
                      "隔离区建不出来（盘根和工作区都不可写）：%s" % first,
                      "检查 sandbox 策略；别改成直接删，先告诉我。")
-    entry_dir = os.path.join(root, entry_id)
+    entry_dir = os.path.join(root, sess, tdir, entry_id)
     _unhide(root)
     moved = []
     for it in items:
@@ -393,6 +502,10 @@ def _do_trash(items, args):
         "tool": "safe-delete.py",
         "mode": "trash",
         "root": root,
+        "session": sess,
+        "turn": turn,
+        "turnLabel": tdir,
+        "entryRel": os.path.relpath(entry_dir, root),
         "cwd": os.getcwd(),
         "items": moved,
     }
@@ -447,7 +560,7 @@ def _append_index(manifest):
         "created": manifest["created"],
         "mode": manifest["mode"],
         "root": manifest["root"],
-        "entry_dir": os.path.join(manifest["root"], manifest["id"]),
+        "entry_dir": os.path.join(manifest["root"], manifest.get("entryRel") or manifest["id"]),
         "items": [{"orig": i["orig"], "dest": i.get("dest"), "kind": i["kind"],
                    "files": i["files"], "bytes": i["bytes"]} for i in manifest["items"]],
         "cwd": manifest.get("cwd"),
@@ -471,41 +584,60 @@ def _record_from_manifest(d):
             "created": d["created"],
             "mode": d.get("mode", "trash"),
             "root": root,
-            "entry_dir": os.path.join(root, d["id"]),
+            "entry_dir": os.path.join(root, d.get("entryRel") or d["id"]),
             "items": [{"orig": i["orig"], "dest": i.get("dest"), "kind": i.get("kind"),
                        "files": i.get("files", 0), "bytes": i.get("bytes", 0)} for i in d["items"]],
             "cwd": d.get("cwd"),
+            "session": d.get("session") or "",
+            "turn": d.get("turn"),
+            "turnLabel": d.get("turnLabel") or "",
         }
     except Exception:
         return None
+
+
+
+def _iter_manifests(root, depth=3):
+    """在隔离区里找 manifest.json：兼容旧的一层 <entry>/ 与新的 <会话>/<轮次>/<entry>/。"""
+    def walk(cur, level):
+        try:
+            names = os.listdir(cur)
+        except OSError:
+            return
+        for name in names:
+            path = os.path.join(cur, name)
+            if os.path.isfile(os.path.join(path, "manifest.json")):
+                yield os.path.join(path, "manifest.json")
+            elif level < depth:
+                for x in walk(path, level + 1):
+                    yield x
+    return walk(root, 1)
 
 
 def _scan_manifests(extra_roots=()):
     """扫隔离区目录里的 manifest.json —— 索引丢了、或索引写不进去时也能 --list / --restore。"""
     recs = []
     for root in sorted(_all_trash_roots(extra_roots)):
-        try:
-            if not os.path.isdir(root):
-                continue
-            for name in os.listdir(root):
-                mf = os.path.join(root, name, "manifest.json")
-                if not os.path.exists(mf):
-                    continue
-                try:
-                    with open(mf, encoding="utf-8") as f:
-                        d = json.load(f)
-                except Exception:
-                    continue
-                r = _record_from_manifest(d)
-                if r:
-                    recs.append(r)
-        except OSError:
+        if not os.path.isdir(root):
             continue
+        for mf in _iter_manifests(root):
+            try:
+                with open(mf, encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            r = _record_from_manifest(d)
+            if r:
+                recs.append(r)
     return recs
 
 
 def _read_index():
+    """以磁盘为准：先扫 manifest（真实位置），再用索引补历史记录。
+
+    索引是缓存，可能在布局变更后过期（例如早期写的是 <root>/<id>）。"""
     recs, seen = [], set()
+    indexed = []
     if os.path.exists(INDEX):
         try:
             with open(INDEX, encoding="utf-8", errors="replace") as f:
@@ -514,20 +646,41 @@ def _read_index():
                     if not line:
                         continue
                     try:
-                        d = json.loads(line)
+                        indexed.append(json.loads(line))
                     except Exception:
                         continue
-                    if d.get("id") not in seen:
-                        seen.add(d.get("id"))
-                        recs.append(d)
         except OSError:
             pass
-    extra = [r.get("root") for r in recs if r.get("root")]
+    extra = [r.get("root") for r in indexed if r.get("root")]
     for d in _scan_manifests(extra):
         if d["id"] not in seen:
             seen.add(d["id"])
             recs.append(d)
+    for d in indexed:
+        if d.get("id") not in seen:
+            seen.add(d.get("id"))
+            recs.append(d)
     return recs
+
+
+def _prune_empty(root):
+    """自底向上剪掉隔离区里的空目录（只删空目录）。"""
+    if not root or not os.path.isdir(root):
+        return
+    base = os.path.normcase(os.path.normpath(root))
+    for _ in range(40):
+        changed = False
+        for dirpath, _dirnames, _filenames in os.walk(root, topdown=False):
+            if os.path.normcase(os.path.normpath(dirpath)) == base:
+                continue
+            try:
+                if not os.listdir(dirpath):
+                    os.rmdir(dirpath)
+                    changed = True
+            except OSError:
+                pass
+        if not changed:
+            break
 
 
 def _rimraf(path, extra_roots=()):
@@ -596,8 +749,9 @@ def _emit(obj, as_json):
         print("[永久删除] %s  %d 项" % (obj["id"], len(obj["items"])))
     elif act == "list":
         for r in obj["items"]:
-            print("%s  %s  %s  %d 项  %s" % (r["id"], r["created"], r["mode"],
-                                             len(r["items"]), r.get("sample", "")))
+            print("%s  %-14s %-7s %s  %d 项  %s" % (
+                r["id"], (r.get("session") or "-")[:14], (r.get("turnLabel") or "-"),
+                r["created"], len(r["items"]), r.get("sample", "")))
 
 
 def _fail(code, message, hint, as_json):
@@ -628,6 +782,8 @@ def main():
                     "（也可用环境变量 SAFE_DELETE_RETENTION_DAYS）")
     ap.add_argument("--no-auto-purge", action="store_true",
                     help="本次不做过期清理（保留期设置不变）")
+    ap.add_argument("--session", metavar="NAME", help="覆盖会话名（默认从 DSH 取）")
+    ap.add_argument("--turn", type=int, metavar="N", help="覆盖轮次（默认从 DSH 取）")
     ap.add_argument("--show-cfg", action="store_true")
     args = ap.parse_args()
     js = args.json
@@ -721,6 +877,8 @@ def main():
         for r in recs:
             _rimraf(r["entry_dir"], [r.get("root")])
             total["items"].append({"orig": r["entry_dir"]})
+        for root in _all_trash_roots():
+            _prune_empty(root)
         _emit({"ok": True, "action": "purge", "id": total["id"], "items": total["items"]}, js)
         return 0
 
