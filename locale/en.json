@@ -1,0 +1,1 @@
+{"meta":{"title":"Delete Guard","description":"Blocks permanent delete commands (rd /s, Remove-Item -Recurse, rm -rf) before they run and points at the reversible safe-delete.py."}}

@@ -1,0 +1,41 @@
+{
+  "name": "@local/safe-delete-guard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Denies destructive delete commands before they run (rd /s, Remove-Item -Recurse, rm -rf, cmd /c wrappers) and points at a reversible delete tool.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "safety",
+    "delete",
+    "guard"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ParadoxFoehn/safe-delete-guard.git"
+  },
+  "homepage": "https://github.com/ParadoxFoehn/safe-delete-guard#readme",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "docs/**",
+    "tools/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

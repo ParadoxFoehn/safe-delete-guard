@@ -1,0 +1,4 @@
+- insert:
+    - id: safe-delete-guard
+      name: '@local/safe-delete-guard'
+      config: {}
