@@ -53,6 +53,13 @@ TEMP = os.path.abspath(os.environ.get("TEMP") or r"C:\Windows\Temp")
 TRASH_DIRNAME = ".dsh-trash"
 WORKSPACE_TRASH = os.path.join(WORKSPACE, "_回收站")
 EXTRA_ROOTS = [p.strip() for p in (os.environ.get("SAFE_DELETE_ALLOW") or "").split(";") if p.strip()]
+# 隔离区目录：默认每个盘根下 <X>:\.dsh-trash，可用环境变量 SAFE_DELETE_TRASH 或 --trash-dir 指定
+TRASH_OVERRIDE = (os.environ.get("SAFE_DELETE_TRASH") or "").strip() or None
+# 自动清理：隔离区里的东西放满这么多天就永久删除；0 = 不自动清
+try:
+    RETENTION_DAYS = float(os.environ.get("SAFE_DELETE_RETENTION_DAYS") or 7)
+except ValueError:
+    RETENTION_DAYS = 7.0
 DSH_HOME = os.environ.get("DSH_HOME") or os.path.join(
     os.environ.get("USERPROFILE", r"C:\Users\Default"), ".dsh")
 DSH_ROOT = os.environ.get("DSH_ROOT") or r"D:\Software\DeepSeekHarness"
@@ -172,13 +179,25 @@ def _allow_roots(extra=None):
     return [os.path.abspath(r) for r in roots if r]
 
 
-def _trash_candidates(path):
-    """隔离区候选：优先盘根 <X>:\\.dsh-trash；盘根写不进去时（sandbox=workspace-write）退到
-    同卷的工作区 _回收站 —— 必须同卷，跨卷改名就不是原子的了。"""
+def _trash_candidates(path, override=None):
+    """隔离区候选，按优先级：
+
+    1. 显式指定的目录（--trash-dir / SAFE_DELETE_TRASH）——必须与目标同卷
+    2. 盘根 <X>:\\.dsh-trash
+    3. 同卷的工作区 _回收站（盘根写不进去时兜底，比如 sandbox=workspace-write）
+
+    同卷是硬要求：跨卷 rename 不是原子的。
+    """
     out = []
-    drv = _drive_root(path)
-    out.append(os.path.join(drv, TRASH_DIRNAME))
-    if os.path.splitdrive(os.path.abspath(path))[0].lower() == os.path.splitdrive(WORKSPACE)[0].lower():
+    vol = os.path.splitdrive(os.path.abspath(path))[0].lower()
+    for cand in (override, TRASH_OVERRIDE):
+        if not cand:
+            continue
+        c = os.path.abspath(cand)
+        if os.path.splitdrive(c)[0].lower() == vol:
+            out.append(c)
+    out.append(os.path.join(_drive_root(path), TRASH_DIRNAME))
+    if vol == os.path.splitdrive(WORKSPACE)[0].lower():
         out.append(WORKSPACE_TRASH)
     return out
 
@@ -187,15 +206,49 @@ def _trash_root(path):
     return _trash_candidates(path)[0]
 
 
-def _all_trash_roots():
+def _all_trash_roots(extra=()):
+    """静态隔离区根：不读索引（否则和 _read_index 互相递归）。
+    索引里记录的额外根（自定义 --trash-dir 建的）由调用方作为 extra 传进来。"""
     roots = {WORKSPACE_TRASH}
     for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
         roots.add(letter + ":\\.dsh-trash")
+    if TRASH_OVERRIDE:
+        roots.add(os.path.abspath(TRASH_OVERRIDE))
+    for r in extra:
+        if r:
+            roots.add(os.path.abspath(r))
     return roots
 
 
-def _in_trash(p):
-    return any(_under(p, r) for r in _all_trash_roots())
+def _auto_purge(days, verbose=True):
+    """隔离区里超过保留期的东西永久删除。返回删掉的 id 列表。"""
+    if days is None or days <= 0:
+        return []
+    cutoff = time.time() - float(days) * 86400
+    removed = []
+    for rec in _read_index():
+        entry = rec.get("entry_dir") or ""
+        if not entry or not os.path.isdir(entry):
+            continue
+        try:
+            ts = datetime.datetime.fromisoformat(rec["created"]).timestamp()
+        except Exception:
+            continue
+        if ts >= cutoff:
+            continue
+        try:
+            _rimraf(entry, [rec.get("root")])
+            removed.append(rec["id"])
+        except Exception as e:
+            if verbose:
+                sys.stderr.write("[warn] 自动清理失败 %s：%s\n" % (rec["id"], e))
+    if removed and verbose:
+        sys.stderr.write("[清理] 隔离区超过 %.0f 天，已永久删除 %d 项\n" % (days, len(removed)))
+    return removed
+
+
+def _in_trash(p, extra=()):
+    return any(_under(p, r) for r in _all_trash_roots(extra))
 
 
 def _is_reparse(path):
@@ -260,7 +313,7 @@ def _check(path, args):
         if _under(p, ap):
             raise Refuse("ancestor", "拒绝删除包含受保护路径的目录：%s" % p,
                          "这个目标把 %s 套在里面了，先缩小范围。" % p)
-    if _in_trash(ap):
+    if _in_trash(ap, [getattr(args, "trash_dir", None)]):
         raise Refuse("in_trash", "目标已在隔离区里：%s" % ap,
                      "永久删除用 --purge <id> --yes。")
     if _is_reparse(ap):
@@ -275,13 +328,14 @@ def _check(path, args):
     return _measure(ap)
 
 
-def _hide(path):
+def _unhide(path):
+    """隔离区要看得见：清掉隐藏属性（老版本建的目录会带）。"""
     try:
         k32 = ctypes.windll.kernel32
         attr = k32.GetFileAttributesW(ctypes.c_wchar_p(path))
-        if attr == 0xFFFFFFFF:
+        if attr == 0xFFFFFFFF or not (attr & 0x2):
             return
-        k32.SetFileAttributesW(ctypes.c_wchar_p(path), attr | 0x2)
+        k32.SetFileAttributesW(ctypes.c_wchar_p(path), attr & ~0x2)
     except Exception:
         pass
 
@@ -303,7 +357,7 @@ def _do_trash(items, args):
                          % (first, it["orig"]),
                          "分两次跑；跨盘改名不是原子的，这里不做。")
     root = None
-    for cand in _trash_candidates(first):
+    for cand in _trash_candidates(first, getattr(args, "trash_dir", None)):
         try:
             os.makedirs(os.path.join(cand, entry_id), exist_ok=False)
             root = cand
@@ -317,7 +371,7 @@ def _do_trash(items, args):
                      "隔离区建不出来（盘根和工作区都不可写）：%s" % first,
                      "检查 sandbox 策略；别改成直接删，先告诉我。")
     entry_dir = os.path.join(root, entry_id)
-    _hide(root)
+    _unhide(root)
     moved = []
     for it in items:
         src = it["orig"]
@@ -426,10 +480,10 @@ def _record_from_manifest(d):
         return None
 
 
-def _scan_manifests():
+def _scan_manifests(extra_roots=()):
     """扫隔离区目录里的 manifest.json —— 索引丢了、或索引写不进去时也能 --list / --restore。"""
     recs = []
-    for root in sorted(_all_trash_roots()):
+    for root in sorted(_all_trash_roots(extra_roots)):
         try:
             if not os.path.isdir(root):
                 continue
@@ -468,17 +522,18 @@ def _read_index():
                         recs.append(d)
         except OSError:
             pass
-    for d in _scan_manifests():
+    extra = [r.get("root") for r in recs if r.get("root")]
+    for d in _scan_manifests(extra):
         if d["id"] not in seen:
             seen.add(d["id"])
             recs.append(d)
     return recs
 
 
-def _rimraf(path):
+def _rimraf(path, extra_roots=()):
     """永久删除：只在隔离区内部使用，不跟随 reparse point。"""
     p = os.path.abspath(path)
-    if not _in_trash(p):
+    if not _in_trash(p, extra_roots):
         raise Refuse("purge_scope", "拒绝永久删除隔离区之外的路径：%s" % p)
     _rimraf_raw(p)
 
@@ -566,6 +621,13 @@ def main():
     ap.add_argument("--restore", metavar="ID")
     ap.add_argument("--purge", metavar="ID")
     ap.add_argument("--purge-older-than", type=float, metavar="DAYS")
+    ap.add_argument("--trash-dir", metavar="DIR",
+                    help="自定义隔离区目录（必须与目标同卷）；也可用环境变量 SAFE_DELETE_TRASH")
+    ap.add_argument("--retention-days", type=float, metavar="DAYS",
+                    help="回收后保留多少天自动永久删除，默认 7；0 = 不自动清"
+                    "（也可用环境变量 SAFE_DELETE_RETENTION_DAYS）")
+    ap.add_argument("--no-auto-purge", action="store_true",
+                    help="本次不做过期清理（保留期设置不变）")
     ap.add_argument("--show-cfg", action="store_true")
     args = ap.parse_args()
     js = args.json
@@ -581,8 +643,14 @@ def main():
         print("永远拒绝（目标是它的祖先）：")
         for r in ancestor:
             print("  - %s" % _long(r))
-        print("隔离区：<盘符>:\\.dsh-trash\\<时间戳>\\   （同盘改名，可 --restore）")
+        print("隔离区：%s" % (os.path.abspath(args.trash_dir) if args.trash_dir
+                              else (TRASH_OVERRIDE and os.path.abspath(TRASH_OVERRIDE))
+                              or "<盘符>:\\.dsh-trash"))
         print("        盘根不可写时退到 %s（同卷）" % WORKSPACE_TRASH)
+        print("        目录默认可见（不设隐藏属性）")
+        ret = args.retention_days if args.retention_days is not None else RETENTION_DAYS
+        print("保留期：%s 天（回收后超过这个天数自动永久删除；0 = 不自动清）"
+              % ("不自动清" if ret <= 0 else "%.0f" % ret))
         print("索引：%s" % INDEX)
         return 0
 
@@ -651,7 +719,7 @@ def main():
                   % ", ".join(r["id"] for r in recs), "先 --list 确认，再带 --yes 重跑。", js)
         total = {"id": ",".join(r["id"] for r in recs), "items": []}
         for r in recs:
-            _rimraf(r["entry_dir"])
+            _rimraf(r["entry_dir"], [r.get("root")])
             total["items"].append({"orig": r["entry_dir"]})
         _emit({"ok": True, "action": "purge", "id": total["id"], "items": total["items"]}, js)
         return 0
@@ -684,6 +752,14 @@ def main():
     if need_yes and not args.yes:
         _fail("need_yes", "目标较大（%d 个文件 / %s），需要 --yes 确认。"
               % (n_files, _human(n_bytes)), "先加 --dry-run 看一眼，再带 --yes。", js)
+
+    # 过期清理：每次真正回收之前顺手做一次，避免隔离区无限长。
+    # --restore / --purge / --list 不触发（否则想还原一条 7 天前的会被先删掉）。
+    ret = args.retention_days if args.retention_days is not None else RETENTION_DAYS
+    if not args.no_auto_purge:
+        removed = _auto_purge(ret, verbose=not js)
+        if removed and js:
+            sys.stderr.write("[清理] 已按 %.0f 天保留期永久删除 %d 项\n" % (ret, len(removed)))
 
     try:
         if args.to == "bin":

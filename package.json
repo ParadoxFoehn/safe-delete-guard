@@ -1,6 +1,6 @@
 {
   "name": "@local/safe-delete-guard",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "Denies destructive delete commands before they run (rd /s, Remove-Item -Recurse, rm -rf, cmd /c wrappers) and points at a reversible delete tool.",
