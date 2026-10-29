@@ -1,1 +1,1 @@
-{"meta":{"title":"删除拦截","description":"在执行前拦下 rd /s、Remove-Item -Recurse、rm -rf 等永久删除命令，改用可逆的 safe-delete.py。"}}
+{"meta":{"title":"安全删除与文件回收站","description":"在执行前拦下 rd /s、Remove-Item -Recurse、rm -rf 等永久删除命令；删除改为同盘改名进隔离区，按会话与轮次分组，可还原、可设保留期、可整体迁移，低磁盘空间时自动清最旧。"}}

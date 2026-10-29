@@ -1,1 +1,1 @@
-{"meta":{"title":"Delete Guard","description":"Blocks permanent delete commands (rd /s, Remove-Item -Recurse, rm -rf) before they run and points at the reversible safe-delete.py."}}
+{"meta":{"title":"Safe Delete & File Trash","description":"Blocks permanent delete commands before they run, and turns deletion into a reversible same-volume move grouped by session and turn, with retention, migration and low-disk protection."}}

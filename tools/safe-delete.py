@@ -260,10 +260,6 @@ def _trash_candidates(path, override=None):
     return out
 
 
-def _trash_root(path):
-    return _trash_candidates(path)[0]
-
-
 def _all_trash_roots(extra=()):
     """静态隔离区根：不读索引（否则和 _read_index 互相递归）。
     索引里记录的额外根（自定义 --trash-dir 建的）由调用方作为 extra 传进来。"""
