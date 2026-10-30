@@ -224,7 +224,15 @@ window.__ModuleLoader__.load({
           .then((txt) => {
             let j = {}
             try { j = JSON.parse(txt || '{}') } catch { j = {} }
-            flash(j.ok ? '已删除' : ('删除失败：' + (j.error || '未知错误')))
+            const failed = Array.isArray(j.failed) ? j.failed : []
+            if (j.ok) {
+              flash('已删除')
+            } else if (failed.length) {
+              // 部分删不掉：文件被占用/权限不足时目录会留在磁盘上，清单里还会出现。
+              flash('已删除 ' + (j.removed || 0) + ' 条，' + failed.length + ' 条没删掉（文件可能正被占用）')
+            } else {
+              flash('删除失败：' + (j.error || '未知错误'))
+            }
           })
           .catch((e) => flash('删除失败：' + (e && e.message ? e.message : e)))
           .finally(() => load())

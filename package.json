@@ -1,6 +1,6 @@
 {
   "name": "@local/safe-delete-guard",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "description": "Denies destructive delete commands before they run, and ships a trash overlay that groups recycled files by session / turn with per-entry retention, a draggable settings window, location migration and low-disk protection.",
@@ -31,6 +31,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "docs/**",
     "tools/**"

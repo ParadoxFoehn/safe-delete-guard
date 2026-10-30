@@ -1,4 +1,4 @@
-﻿/**
+/**
  * safe-delete-guard — 在工具执行前拦下永久删除命令（Host 插件）
  *
  * 它解决的问题
@@ -497,19 +497,36 @@ function deleteScope(session, turn) {
   let removed = 0;
   let freed = 0;
   const touchedRoots = new Set();
+  // 删不掉的条目必须报出去，不能静默成功（2026-10-30 修）：
+  // 文件被占用时 rmSync 会抛 EBUSY/EPERM，目录和 manifest.json 都还在 ——
+  // 清单是按磁盘上的 manifest 扫出来的，所以那条会继续出现，而界面却显示"已删除"。
+  const failed = [];
   for (const e of collect()) {
     if (e.session !== name) continue;
     if (turn && e.turnLabel !== turnName) continue;
     touchedRoots.add(e.root);
     try {
-      freed += e.bytes;
       rmSync(e.dir, { recursive: true, force: true });
       removed += 1;
-    } catch { /* keep going */ }
+      freed += e.bytes;
+    } catch (err) {
+      failed.push({
+        dir: e.dir,
+        session: name,
+        turn: turnName,
+        error: String((err && (err.code || err.message)) || err),
+      });
+    }
   }
   // 删完统一剪掉空目录（轮次 / 会话）
   for (const root of touchedRoots) pruneEmpty(root);
-  return { ok: true, removed, freed, alreadyGone: removed === 0 };
+  return {
+    ok: failed.length === 0,
+    removed,
+    freed,
+    failed,
+    alreadyGone: removed === 0 && failed.length === 0,
+  };
 }
 
 function installRoutes(ctx) {
