@@ -30,7 +30,11 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
-const SHELL_TOOLS = new Set(['pwsh', 'bash', 'shell', 'powershell']);
+const SHELL_TOOLS = new Set([
+  'pwsh', 'bash', 'shell', 'powershell',
+  // 其它 harness / 客户端的同类工具名（2026-11-01 补：名字不认识时会 fail-open 放行，等于没装）
+  'ops_bash', 'terminal_send', 'terminal', 'run_shell', 'shell_exec', 'exec',
+]);
 // 代码执行类只匹配"强模式"（递归/整盘），避免把普通代码里的 remove 当删除命令
 const CODE_TOOLS = new Set(['run_code', 'node', 'python']);
 
@@ -158,7 +162,10 @@ export function apply(ctx, config = {}) {
   const deny = makeDeny(reversible);
 
   ctx.tools.guard((exec) => {
-    if (!SHELL_TOOLS.has(exec.name) && !CODE_TOOLS.has(exec.name)) return undefined;
+    // 兜底：工具名里含 shell / bash / terminal / cmd 的一律按 shell 处理，
+    // 避免"换了个 harness 就整机不设防"（fail-closed 优先于漏拦）
+    const nameLooksShell = /(shell|bash|zsh|terminal|cmd|exec)/i.test(String(exec.name || ''));
+    if (!SHELL_TOOLS.has(exec.name) && !CODE_TOOLS.has(exec.name) && !nameLooksShell) return undefined;
     const args = exec.arguments ?? {};
     const command = [args.command, args.code, args.script, args.cmd]
       .filter((v) => typeof v === 'string')
@@ -197,7 +204,8 @@ export function apply(ctx, config = {}) {
       );
     }
 
-    const list = SHELL_TOOLS.has(exec.name) ? RECURSIVE.concat(blockFlat ? FLAT : []) : RECURSIVE;
+    const isShell = SHELL_TOOLS.has(exec.name) || nameLooksShell;
+    const list = isShell ? RECURSIVE.concat(blockFlat ? FLAT : []) : RECURSIVE;
     const hit = list.find((p) => p.re.test(hay));
     if (!hit) return undefined;
 

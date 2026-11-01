@@ -12,16 +12,18 @@ safe-delete.py -- 可逆删除。默认把目标"回收"进同盘私有隔离区
       3) 每次删除留 manifest + 审计索引；--restore 还原，--purge 才真删（要 --yes）
 
 用法
-    py.cmd dsh-tools\\safe-delete.py <路径> [<路径>...]           # 回收（默认）
-    py.cmd dsh-tools\\safe-delete.py <路径> --dry-run             # 只看会删什么
-    py.cmd dsh-tools\\safe-delete.py <路径> --to bin              # 走系统回收站
-    py.cmd dsh-tools\\safe-delete.py --list                       # 看隔离区里有什么
-    py.cmd dsh-tools\\safe-delete.py --restore <id>               # 还原
-    py.cmd dsh-tools\\safe-delete.py --purge <id> --yes            # 永久删除（不可逆）
-    py.cmd dsh-tools\\safe-delete.py --purge-older-than 7 --yes
-    py.cmd dsh-tools\\safe-delete.py --show-cfg                   # 看保护清单与白名单
+    safe-delete.py <路径> [<路径>...]                            # 回收（默认）
+    safe-delete.py <路径> --dry-run             # 只看会删什么
+    safe-delete.py <路径> --to bin              # 走系统回收站
+    safe-delete.py --list                       # 看隔离区里有什么
+    safe-delete.py --restore <id>               # 还原
+    safe-delete.py --purge <id> --yes            # 永久删除（不可逆）
+    safe-delete.py --purge-older-than 7 --yes
+    safe-delete.py --show-cfg                   # 看保护清单与白名单
     ... --json                                                     # 机器可读（一次一条 JSON）
     ... --allow-outside                                            # 明确允许删白名单之外的路径
+
+    （在 DSH 工作区里通常写成 py.cmd dsh-tools\\safe-delete.py）
 
 为什么默认不是系统回收站
     系统回收站有配额的。超出配额的删除会被 Windows **静默变成永久删除**，不提示、不进回收站。
@@ -39,6 +41,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -726,7 +729,7 @@ def _emit(obj, as_json):
                                                   _human(sum(i["bytes"] for i in obj["items"]))))
         for i in obj["items"]:
             print("   - %s  ->  %s" % (i["orig"], i["dest"]))
-        print("[还原] py.cmd dsh-tools\\safe-delete.py --restore %s" % obj["id"])
+        print("[还原] safe-delete.py --restore %s" % obj["id"])
     elif act == "dry_run":
         print("[预演] 会回收 %d 项 / %d 个文件 / %s" % (len(obj["items"]),
                                                  sum(i["files"] for i in obj["items"]),
@@ -879,7 +882,7 @@ def main():
         return 0
 
     if not args.paths:
-        _fail("no_path", "没有给路径。", "用法：py.cmd dsh-tools\\safe-delete.py <路径> [--dry-run]", js)
+        _fail("no_path", "没有给路径。", "用法：safe-delete.py <路径> [--dry-run]", js)
 
     plan, err = [], None
     for raw in args.paths:

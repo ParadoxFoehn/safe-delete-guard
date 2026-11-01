@@ -1,5 +1,22 @@
 # 安全删除与文件回收站（safe-delete-guard）
 
+## 维护
+
+- **谁改**：本插件我改过就归我维护；升级前先备份，改动写进 `doc`/提交说明。
+- **同步与记录**：接口或依赖变了当天改本文件；行为异常先跑 `plugin-injection-audit`。
+
+## 索引
+
+| 要什么 | 去哪 |
+| --- | --- |
+| 入口说明（本文件） | `README.md` |
+| 附属文件 | `.gitattributes` |
+| 附属文件 | `.gitignore` |
+| 文档 | `CHANGELOG.md` |
+
+## 这是什么
+
+
 给 DeepSeek Harness（DSH）用的插件，两件事：
 
 1. **在执行前拦下永久删除**（`rd /s`、`Remove-Item -Recurse`、`rm -rf`、`cmd /c` 套壳……）；

@@ -2,3 +2,5 @@ node_modules/
 *.log
 *.zip
 .guard-log/
+__pycache__/
+*.pyc

@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 1.2.3 - 2026-11-01
+
+### 修复
+
+- **仓库里的 `tools/safe-delete.py` 缺 `import shutil`**：`_make_room()`（目标盘快满时腾空间）
+  会走到 `_free_bytes()` → `shutil.disk_usage()`，触发 `NameError` 而不是给出可读错误。
+  平时用不出来，一旦盘满就崩在这里。工作区正本一直是好的，是发布版落后于本地。
+- **其它 harness 的 shell 工具名不认**（`ops_bash` / `terminal_send` 等）：
+  原实现只认 `pwsh/bash/shell/powershell`，名字不认识就 `return undefined`——
+  **等于换台机器就整机不设防**。现在补齐常见工具名，并加一层正则兜底
+  （名字含 shell / bash / zsh / terminal / cmd / exec 一律按 shell 处理），
+  从 fail-open 改为 fail-closed。
+
+### 改进
+
+- 运行期提示不再硬编码 `py.cmd dsh-tools\safe-delete.py`（别人机器上没有），
+  改为 `safe-delete.py --restore <id>`；用法头部仍注明 DSH 里的常见写法。
+
 ## 1.2.2 - 2026-10-30
 
 ### 修复
