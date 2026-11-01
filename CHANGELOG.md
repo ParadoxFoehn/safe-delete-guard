@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## 1.2.4 - 2026-11-02
+
+### 修复
+
+- **数据载荷被当成命令扫**（今天两次误拦的根因）：`-Body` / `--message` / `-d` / `echo`
+  等旗标后面的引号段落是**内容不是命令**，现在按「命令位」解析后再匹配规则。
+  实测动机：一条 B 站回复正文里出现删除命令的字面量，被自己插件拦住发不出去。
+  新增单元测试 `test/strip-payloads.cjs`（8 例，含 JSON 转义与 `bash -c` 真命令）。
+  注意边界：`-c` / `-Command` / `bash -c` 后面的内容**照扫**，不会因为这条修复漏拦。
+- **脚本路径只认反斜杠**：`D:/x/dsh-tools/a.ps1`、MSYS 风格 `/d/x/dsh-tools/a.ps1`
+  会被判「非工具目录」。新增 `normalizeScriptPath()`：MSYS 前缀还原、斜杠归一、
+  重复分隔符折叠，**UNC `\\\\server` 前缀单独保住**（否则会被折成 `\server`）。
+  测试 `test/normalize-path.cjs`（8 例）。
+- **终端工具的 `args.text` 载荷没被扫**：有些宿主把命令放在 `text` 字段，原来只看
+  `command/code/script/cmd`，等于漏拦。
+- **悬浮球会跑到视口外**（换窗口尺寸/重启后"消失"）：读回坐标时夹进视口，
+  并补 `resize` 监听把位置收回并写回 `localStorage`；拖动夹取改用同一常量 `FAB`。
+- **提示里的启动方式写死**：改为按 `sys.argv[0]` 推（`.py` 直跑显示 `safe-delete.py`，
+  同级有 `.cmd` 则显示 `.cmd`），不再假设使用者装了 `py.cmd`。
+
 ## 1.2.3 - 2026-11-01
 
 ### 修复

@@ -118,8 +118,88 @@ function makeDeny(reversible) {
   };
 }
 
-function scriptViolation(text, workdir, extraDirs) {
-  const CALL_WORDS = new Set(['start', 'call', '-file', '-f']);
+// 数据载荷的旗标：后面那个引号段落是"内容"，不是"命令"。
+// 2026-11-02 实测动机：一条 B 站回复里出现删除命令的字面量，被本插件误拦。
+const DATA_FLAGS = new Set([
+  '-body', '--body', '--message', '-m', '--comment', '--text', '--desc',
+  '--description', '--prompt', '-d', '--data', '--data-binary', '--data-raw',
+  '--data-urlencode', '-f', '--field', '-h', '--header', '--title', '--subject'
+]);
+
+// 执行载荷的旗标：后面那个引号段落**是**命令，必须扫。
+const EXEC_FLAGS = new Set([
+  '-c', '-command', '--command', '-lc', '-c:', '/c', '/k', '-encodedcommand'
+]);
+
+// here-string / 变量赋值：内容本体不当命令看（PowerShell @' .. '@、@\" .. \"@）
+const HERESTRING = /@['"]\n?[\s\S]*?\n?['"]@/g;
+
+// 只往屏幕/日志吐字、不执行东西的命令：它后面的引号段落都是说明文字
+const DATA_SINKS = new Set([
+  'echo', 'write-output', 'write-host', 'write-information', 'write-verbose',
+  'write-warning', 'print', 'printf', 'logger', 'msg'
+]);
+
+function stripDataPayloads(text) {
+  if (!text) return '';
+  let src = text.replace(HERESTRING, ' ');
+  let out = '';
+  let i = 0;
+  let lastFlag = '';
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      let buf = '';
+      while (j < src.length) {
+        // 反斜杠转义：JSON 里的 \" 是内容，不能当引号闭合
+        if (src[j] === '\\' && j + 1 < src.length) { buf += src[j] + src[j + 1]; j += 2; continue; }
+        if (src[j] === '`' && quote === '"') { buf += src[j + 1] ?? ''; j += 2; continue; }
+        if (src[j] === quote) {
+          // PowerShell 的 '' 转义
+          if (quote === "'" && src[j + 1] === "'") { buf += "'"; j += 2; continue; }
+          break;
+        }
+        buf += src[j];
+        j += 1;
+      }
+      const isData = (DATA_FLAGS.has(lastFlag) || DATA_SINKS.has(lastFlag)) && !EXEC_FLAGS.has(lastFlag);
+      // 数据段落用占位符替换，保留长度感但不带命令词
+      out += isData ? ' <data> ' : (' ' + buf + ' ');
+      i = j + 1;
+      lastFlag = '';
+      continue;
+    }
+    if (/\s/.test(ch)) { out += ch; i += 1; continue; }
+    // 读一个裸 token 作为"可能是旗标"
+    let k = i;
+    let tok = '';
+    while (k < src.length && !/\s/.test(src[k]) && src[k] !== '"' && src[k] !== "'") {
+      tok += src[k];
+      k += 1;
+    }
+    out += tok;
+    lastFlag = tok.toLowerCase().replace(/^&\s*/, '');
+    i = k;
+  }
+  return out;
+}
+
+function normalizeScriptPath(p) {
+  let s = String(p).trim();
+  // MSYS / Git-Bash 风格：/c/Users/x → c:/Users/x
+  const msys = s.match(/^\/([a-zA-Z])\/(.*)$/);
+  if (msys) s = msys[1] + ':/' + msys[2];
+  // UNC（\\server\share）先保住前缀，否则下面的斜杠折叠会把它压坏
+  const unc = /^\\\\/.test(s);
+  if (!unc) s = s.replace(/\//g, '\\');
+  s = s.replace(/\\{2,}/g, '\\');
+  if (unc) s = '\\\\' + s.replace(/^\\+/, '');
+  return s.toLowerCase();
+}
+
+function scriptViolation(text, workdir, extraDirs) {  const CALL_WORDS = new Set(['start', 'call', '-file', '-f']);
   // 只在"命令位"检查：每条命令的首 token，或 start/call/-File 后面那个。
   // 否则 Set-Content 写一个 .ps1 也会被误判成执行它。
   for (const seg of text.split(/[\n;|&]+/)) {
@@ -136,7 +216,7 @@ function scriptViolation(text, workdir, extraDirs) {
         const wd = (workdir || '').replace(/[\\/]+$/, '');
         p = (wd ? wd + '\\' : '') + p.replace(/^\.[\\/]/, '');
       }
-      const norm = p.toLowerCase().replace(/\\{2,}/g, '\\');
+      const norm = normalizeScriptPath(p);
       if (TOOL_SEGMENTS.some((s) => norm.includes(s))) continue;
       if (extraDirs.some((d) => norm.startsWith(d + '\\') || norm === d)) continue;
       return toks[i];
@@ -167,7 +247,7 @@ export function apply(ctx, config = {}) {
     const nameLooksShell = /(shell|bash|zsh|terminal|cmd|exec)/i.test(String(exec.name || ''));
     if (!SHELL_TOOLS.has(exec.name) && !CODE_TOOLS.has(exec.name) && !nameLooksShell) return undefined;
     const args = exec.arguments ?? {};
-    const command = [args.command, args.code, args.script, args.cmd]
+    const command = [args.command, args.code, args.script, args.cmd, args.text]
       .filter((v) => typeof v === 'string')
       .join('\n');
     if (!command.trim()) return undefined;
@@ -206,7 +286,10 @@ export function apply(ctx, config = {}) {
 
     const isShell = SHELL_TOOLS.has(exec.name) || nameLooksShell;
     const list = isShell ? RECURSIVE.concat(blockFlat ? FLAT : []) : RECURSIVE;
-    const hit = list.find((p) => p.re.test(hay));
+    // 只看"命令位"：把 -Body / --message / -d 这类数据载荷里的引号段落剔掉。
+    // 否则一句普通回复（评论/提交信息/JSON）里出现删除命令的字面量就会被误拦。
+    const cmdOnly = stripDataPayloads(command);
+    const hit = list.find((p) => p.re.test(cmdOnly.replace(/\s+/g, ' ')));
     if (!hit) return undefined;
 
     logBlock({

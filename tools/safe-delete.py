@@ -60,6 +60,19 @@ EXTRA_ROOTS = [p.strip() for p in (os.environ.get("SAFE_DELETE_ALLOW") or "").sp
 CONFIG_PATH = os.path.join(os.environ.get("LOCALAPPDATA") or TEMP, "dsh-safe-delete", "config.json")
 
 
+def _launch():
+    """调用者实际用的启动方式：python 直跑 → safe-delete.py；.cmd 包装 → safe-delete.cmd。
+
+    提示里不能写死作者自己的 py.cmd dsh-tools\\...（别人照着复制必然失败）。
+    """
+    base = os.path.basename(sys.argv[0] or "") or "safe-delete.py"
+    if base.lower().endswith(".py"):
+        cmd = os.path.splitext(base)[0] + ".cmd"
+        if os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0] or ".")), cmd)):
+            return cmd
+    return base
+
+
 def _load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
@@ -729,7 +742,7 @@ def _emit(obj, as_json):
                                                   _human(sum(i["bytes"] for i in obj["items"]))))
         for i in obj["items"]:
             print("   - %s  ->  %s" % (i["orig"], i["dest"]))
-        print("[还原] safe-delete.py --restore %s" % obj["id"])
+        print("[还原] %s --restore %s" % (_launch(), obj["id"]))
     elif act == "dry_run":
         print("[预演] 会回收 %d 项 / %d 个文件 / %s" % (len(obj["items"]),
                                                  sum(i["files"] for i in obj["items"]),
@@ -882,7 +895,7 @@ def main():
         return 0
 
     if not args.paths:
-        _fail("no_path", "没有给路径。", "用法：safe-delete.py <路径> [--dry-run]", js)
+        _fail("no_path", "没有给路径。", "用法：%s <路径> [--dry-run]" % _launch(), js)
 
     plan, err = [], None
     for raw in args.paths:

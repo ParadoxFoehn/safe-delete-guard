@@ -559,11 +559,21 @@ window.__ModuleLoader__.load({
       const [disk, setDisk] = React.useState(null)
       const [warn, setWarn] = React.useState(false)
       const [pal, setPal] = React.useState(() => resolvePalette(null))
+      // 读回坐标时夹进视口：换过屏幕/缩过窗口后，旧坐标可能落在视口外（看着像"悬浮球消失"）
+      const FAB = 52
+      const clampPos = (p) => {
+        const maxX = Math.max(0, window.innerWidth - FAB)
+        const maxY = Math.max(0, window.innerHeight - FAB)
+        return {
+          x: Math.min(maxX, Math.max(0, Math.round(p.x))),
+          y: Math.min(maxY, Math.max(0, Math.round(p.y))),
+        }
+      }
       const [pos, setPos] = React.useState(() => {
         try {
           const raw = localStorage.getItem('sdg-fab-pos')
           const p = raw ? JSON.parse(raw) : null
-          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return p
+          if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return clampPos(p)
         } catch { /* ignore */ }
         return { x: Math.max(8, window.innerWidth - 178), y: 8 }
       })
@@ -573,6 +583,21 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         try { setPal(resolvePalette(wrapRef.current)) } catch { /* keep fallback */ }
+      }, [])
+
+      // 窗口尺寸变化时把悬浮球夹回视口内（并写回，免得下次又跑到外面）
+      React.useEffect(() => {
+        const onResize = () => {
+          setPos((p) => {
+            const q = clampPos(p)
+            if (q.x !== p.x || q.y !== p.y) {
+              try { localStorage.setItem('sdg-fab-pos', JSON.stringify(q)) } catch { /* ignore */ }
+            }
+            return q
+          })
+        }
+        window.addEventListener('resize', onResize)
+        return () => window.removeEventListener('resize', onResize)
       }, [])
 
       React.useEffect(() => {
@@ -605,8 +630,8 @@ window.__ModuleLoader__.load({
           if (!d.moved && Math.abs(dx) + Math.abs(dy) > 3) d.moved = true
           if (d.moved) {
             setPos({
-              x: Math.min(window.innerWidth - 52, Math.max(0, d.ox + dx)),
-              y: Math.min(window.innerHeight - 52, Math.max(0, d.oy + dy)),
+              x: Math.min(window.innerWidth - FAB, Math.max(0, d.ox + dx)),
+              y: Math.min(window.innerHeight - FAB, Math.max(0, d.oy + dy)),
             })
           }
           e.preventDefault()
