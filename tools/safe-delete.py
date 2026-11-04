@@ -97,6 +97,7 @@ DSH_HOME = os.environ.get("DSH_HOME") or os.path.join(
 DSH_ROOT = os.environ.get("DSH_ROOT") or r"D:\Software\DeepSeekHarness"
 STATE_DIR = os.path.join(os.environ.get("LOCALAPPDATA") or TEMP, "dsh-safe-delete")
 INDEX = os.path.join(STATE_DIR, "index.jsonl")
+GONE = os.path.join(STATE_DIR, "gone.jsonl")   # 墓碑：被永久删除的条目（2026-11-04 加）
 
 WARN_FILES = 500
 WARN_BYTES = 1024 ** 3
@@ -243,6 +244,7 @@ def _make_room(target, need):
         try:
             _rimraf(entry, [r.get("root")])
             removed += 1
+            _mark_gone(r.get("id"), "空间不足，自动清理最早的回收记录")
             free += size
         except Exception:
             pass
@@ -309,6 +311,7 @@ def _auto_purge(days, verbose=True):
         try:
             _rimraf(entry, [rec.get("root")])
             removed.append(rec["id"])
+            _mark_gone(rec["id"], "超过保留期自动清理")
         except Exception as e:
             if verbose:
                 sys.stderr.write("[warn] 自动清理失败 %s：%s\n" % (rec["id"], e))
@@ -588,6 +591,45 @@ def _append_index(manifest):
                          % (e, os.path.join(manifest["root"], manifest["id"])))
 
 
+def _now_iso():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _mark_gone(rec_id, reason):
+    """给被永久删除的条目立墓碑。
+
+    2026-11-04 加：B 站评论「清之前该标一句已永久删除，不然还以为能捡回来」——
+    核代码后发现更糟：还原一条已被清掉的记录会**静默返回 ok:true / 0 项**，
+    看起来像成功。现在永久删除时留一条墓碑，还原时能明确说"没了、什么时候没的"。
+    """
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(GONE, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"id": rec_id, "gone_at": _now_iso(), "reason": reason},
+                               ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _gone_map():
+    """id → {gone_at, reason}（后写的覆盖先写的）。"""
+    out = {}
+    try:
+        with open(GONE, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    out[r.get("id")] = r
+                except Exception:
+                    continue
+    except OSError:
+        pass
+    return out
+
+
 def _record_from_manifest(d):
     try:
         root = d["root"]
@@ -829,19 +871,38 @@ def main():
         out = {"ok": True, "action": "list",
                "items": [dict(r, sample="; ".join(os.path.basename(i["orig"]) for i in r["items"][:3]))
                          for r in recs]}
+        gone_ids = _gone_map()
+        if gone_ids:
+            out["gone"] = list(gone_ids.values())
         _emit(out, js)
         if not js and not recs:
             print("隔离区是空的。")
+        if not js and gone_ids:
+            print("另有 %d 条已被永久删除（自动清理 / --purge），还原不了；明细在 %s"
+                  % (len(gone_ids), GONE))
         return 0
 
     if args.restore:
         recs = [r for r in _read_index() if r["id"] == args.restore]
+        gone = _gone_map().get(args.restore)
+        if gone:
+            _fail("gone_permanently",
+                  "这条已于 %s 被永久删除（%s），取不回来了。"
+                  % (gone.get("gone_at", "?"), gone.get("reason", "原因未记录")),
+                  "回收站只保「还没被永久删除」的那些；--list 能看到的都还能还原。", js)
         if not recs:
             _fail("no_such_id", "索引里没有这个 id：%s" % args.restore,
                   "先 --list 看有哪些。", js)
         rec = recs[-1]
+        alive = [it for it in rec["items"]
+                 if it.get("dest") and os.path.exists(it.get("dest"))]
+        if not alive:
+            # 记录还在但目录没了：旧版会静默返回 ok:true / 0 项，看着像成功
+            _fail("restore_unavailable",
+                  "这条的目录已经不在了（可能被自动清理永久删除），没有可还原的内容。",
+                  "先 --list 看还能还原哪些；想保住更久就调大保留天数（--retention-days）。", js)
         items = []
-        for it in rec["items"]:
+        for it in alive:
             dest = it.get("dest")
             orig = it["orig"]
             if not dest or not os.path.exists(dest):
@@ -888,6 +949,7 @@ def main():
         total = {"id": ",".join(r["id"] for r in recs), "items": []}
         for r in recs:
             _rimraf(r["entry_dir"], [r.get("root")])
+            _mark_gone(r["id"], "手动 --purge")
             total["items"].append({"orig": r["entry_dir"]})
         for root in _all_trash_roots():
             _prune_empty(root)

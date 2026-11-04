@@ -1,5 +1,25 @@
 # CHANGELOG
 
+## 1.2.5 - 2026-11-04
+
+### 修复
+
+- **被永久删除的条目不再"看着还能还原"**（B 站评论指出，实测比这更糟）：
+  以前自动清理（盘满 / 超保留期）或 `--purge` 之后，索引里的记录还在，
+  `--restore <id>` 会走一遍"dest 不存在 → continue"然后**静默返回 `ok:true` / 0 项**——
+  看起来像还原成功了。现在：
+  - 三处永久删除（`_make_room`、保留期清理、手动 `--purge`）都会写一条墓碑
+    `%LOCALAPPDATA%\dsh-safe-delete\gone.jsonl`（含时间与原因）；
+  - `--restore` 命中墓碑 → 明确报 `gone_permanently`：「这条已于 X 被永久删除（原因），取不回来了」；
+  - 记录还在但目录没了 → 报 `restore_unavailable`，不再假成功；
+  - `--list` 末尾多一行「另有 N 条已被永久删除」，JSON 里给 `gone` 数组。
+
+### 测试
+
+- 造一条回收 → 删目录 → 还原：报 `restore_unavailable`（旧版返回 ok:true）
+- 回收 → `--purge` → 还原：报 `gone_permanently` + 时间 + 原因
+- 把目录移走再放回：放回后正常还原，说明判定按"目录是否还在"，不是按记录
+
 ## 1.2.4 - 2026-11-02
 
 ### 修复
