@@ -168,7 +168,12 @@ def _protected():
         r"C:\$Recycle.Bin",
         r"C:\PerfLogs",
         DSH_ROOT,
-        DSH_HOME,
+        # 2026-11-07 用户定：`.dsh`（DSH_HOME）整体不再受保护——
+        # 移动/改名已有单独的插件闸（index.js 拦 Move-Item），本工具删除又会
+        # 同盘改名进隔离区、可 --restore 还原，两道保险都在。
+        # 只保留两处硬保护：规则（rules）与客户端存储（storages）。
+        os.path.join(DSH_HOME, "rules"),
+        os.path.join(DSH_HOME, "storages"),
         os.path.join(WORKSPACE, "dsh-tools"),
         os.path.join(WORKSPACE, "文档"),
         os.path.join(WORKSPACE, "Memory"),
@@ -380,7 +385,7 @@ def _check(path, args):
         for p in under:
             if _under(ap, p):
                 raise Refuse("protected", "拒绝删除受保护目录：%s" % p,
-                             "系统目录 / 工具目录 / 规则目录一律不可删；要清理请指明它下面的具体子项。")
+                             "系统目录 / 工具目录 / 规则与客户端存储一律不可删；要清理请指明它下面的具体子项。")
     for p in ancestor:
         if _nc(p) == _nc(ap):
             raise Refuse("protected_self", "这是受保护的根目录本身，不能删：%s" % p,

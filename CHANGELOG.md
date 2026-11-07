@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 1.2.6 - 2026-11-07
+
+### 变更
+
+- **`.dsh`（DSH_HOME）不再整棵受保护**（用户 2026-11-07 定）：
+  理由两道保险都在——① 移动/改名由本插件 `index.js` 单独拦（`Move-Item`/`Rename-Item`/`mv` 一律拒）；
+  ② 删除仍是"同盘改名进隔离区"，可 `--restore` 还原。
+- **只保留两处硬保护**：`%USERPROFILE%\.dsh\rules`（规则正本）与 `.dsh\storages`（客户端存储）。
+- 拒绝提示语同步改成「系统目录 / 工具目录 / **规则与客户端存储** 一律不可删」。
+
+### 实测
+
+- `.dsh\workflows\学习工作流.md` → 回收成功，隔离区可还原（`--restore 20261107-200534-6908`）
+- `.dsh\rules` / `.dsh\storages` → 仍拒绝
+
+### 注意
+
+- **运行中的副本是 `D:\Harness工作区\dsh-tools\safe-delete.py`**（插件 `index.js` 只把它当"可逆命令前缀"识别）。
+  本仓 `tools/safe-delete.py` 是源码副本；两份**长期存在差异**（运行时那份多 `--allow-dsh` / `--allow-tool-scratch` / `--show-cfg`），
+  改保护逻辑时**两份都要改**，否则改了不生效（本次就踩了：先改了本仓，`--dry-run` 仍报旧提示）。
+
 ## 1.2.5 - 2026-11-04
 
 ### 修复
